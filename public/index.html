@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Sealed Nectar study cards</title>
+  <meta name="description" content="Turn each day's reading of The Sealed Nectar into Anki cards.">
+  <meta name="theme-color" content="#eceee9" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#111819" media="(prefers-color-scheme: dark)">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Nectar Cards">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" type="image/png" href="/icons/icon-192.png">
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+  <link rel="preload" href="/fonts/literata-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/styles.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <header class="top wrap">
+    <div class="top-row">
+      <p class="app-name">Sealed Nectar study cards</p>
+      <button class="icon-btn" id="open-settings" type="button" aria-label="Settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+      </button>
+    </div>
+    <div class="journey">
+      <div class="day-row">
+        <h1 id="day-title" aria-live="polite">Day 1 <small>of 85</small></h1>
+        <button class="step" type="button" id="day-down" aria-label="Previous day">&minus;</button>
+        <button class="step" type="button" id="day-up" aria-label="Next day">+</button>
+      </div>
+      <!-- The route bends south first, as the Hijrah did, then runs north. -->
+      <svg class="route" viewBox="0 0 320 64" role="img" aria-labelledby="route-label">
+        <title id="route-label">Reading progress from Makkah to Madinah</title>
+        <path id="route-path" class="trail" pathLength="1000"
+              d="M8 22 C 30 22, 38 52, 64 50 S 96 30, 120 34 S 168 50, 196 38 S 250 14, 280 20 S 306 14, 312 10"/>
+        <path id="route-walked" class="walked" pathLength="1000" stroke-dasharray="1000 1000" stroke-dashoffset="1000"
+              d="M8 22 C 30 22, 38 52, 64 50 S 96 30, 120 34 S 168 50, 196 38 S 250 14, 280 20 S 306 14, 312 10"/>
+        <circle class="end" cx="8" cy="22" r="4"/>
+        <circle class="end" cx="312" cy="10" r="4"/>
+        <circle id="route-here" class="here" cx="8" cy="22" r="7"/>
+      </svg>
+      <div class="route-ends"><span>Makkah</span><span id="pages-label"></span><span>Madinah</span></div>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section class="panel" aria-labelledby="reading-h">
+      <h2 id="reading-h">Today's reading</h2>
+      <label class="field"><span>Chapter</span>
+        <input type="text" id="chapter" autocomplete="off" placeholder="e.g. The migration to Madinah" maxlength="200">
+      </label>
+      <fieldset class="seg" aria-label="Where the text comes from">
+        <label><input type="radio" name="mode" value="pdf" checked><span>Book PDF</span></label>
+        <label><input type="radio" name="mode" value="paste"><span>Paste text</span></label>
+      </fieldset>
+
+      <div id="pdf-box">
+        <div class="book" id="book-row">
+          <p class="book-name" id="book-name">No book chosen<small>Choose it once; it stays on this device.</small></p>
+          <label class="file-btn"><span id="book-btn-label">Choose PDF</span>
+            <input type="file" id="book-input" accept="application/pdf,.pdf">
+          </label>
+        </div>
+        <div class="pages" id="pages">
+          <div><span class="label" id="first-l">From page</span>
+            <div class="num"><button type="button" data-num="first" data-d="-1" aria-label="From page, minus one">&minus;</button><input type="number" id="first" inputmode="numeric" min="1" value="1" aria-labelledby="first-l"><button type="button" data-num="first" data-d="1" aria-label="From page, plus one">+</button></div>
+          </div>
+          <div><span class="label" id="last-l">To page</span>
+            <div class="num"><button type="button" data-num="last" data-d="-1" aria-label="To page, minus one">&minus;</button><input type="number" id="last" inputmode="numeric" min="1" value="7" aria-labelledby="last-l"><button type="button" data-num="last" data-d="1" aria-label="To page, plus one">+</button></div>
+          </div>
+        </div>
+      </div>
+
+      <div id="paste-box" hidden>
+        <label class="field" style="margin:14px 0 0"><span>Text</span>
+          <textarea id="paste" placeholder="Paste today's pages here"></textarea>
+        </label>
+      </div>
+
+      <p class="status" id="extract-status" aria-live="polite"></p>
+      <details class="preview" id="preview" hidden>
+        <summary>Check the extracted text</summary>
+        <div class="preview-text" id="preview-text"></div>
+      </details>
+    </section>
+
+    <section class="panel" aria-labelledby="cards-h">
+      <h2 id="cards-h">Cards to make</h2>
+      <div class="opt">
+        <span class="label" id="mcq-l">Multiple-choice questions</span>
+        <fieldset class="seg" id="mcq-seg" aria-labelledby="mcq-l"></fieldset>
+        <p class="hint" id="mix"></p>
+      </div>
+      <div class="opt">
+        <span class="label" id="cloze-l">Hijrah route cards, at most</span>
+        <fieldset class="seg" id="cloze-seg" aria-labelledby="cloze-l"></fieldset>
+        <p class="hint">Only facts the text states. Days without route facts make none.</p>
+      </div>
+      <div class="opt">
+        <span class="label" id="scope-l">Route card scope</span>
+        <fieldset class="seg wrap-text" aria-labelledby="scope-l">
+          <label><input type="radio" name="scope" value="strict" checked><span>The Hijrah journey</span></label>
+          <label><input type="radio" name="scope" value="broad"><span>Also Makkah &amp; Madinah</span></label>
+        </fieldset>
+      </div>
+    </section>
+
+    <div id="banners"></div>
+
+    <section id="results" hidden aria-labelledby="results-h">
+      <div class="results-head">
+        <h2 id="results-h">Review</h2>
+        <button type="button" class="link-btn" id="regenerate">Generate again</button>
+      </div>
+      <div class="tabs">
+        <fieldset class="seg" aria-label="Card type">
+          <label><input type="radio" name="tab" value="mcq" checked><span>Questions <span class="count" id="mcq-count"></span></span></label>
+          <label><input type="radio" name="tab" value="cloze"><span>Route cards <span class="count" id="cloze-count"></span></span></label>
+        </fieldset>
+      </div>
+      <div id="tab-mcq"></div>
+      <div id="tab-cloze" hidden></div>
+    </section>
+  </main>
+
+  <div class="dock">
+    <div class="wrap">
+      <div id="dock-generate">
+        <button type="button" class="btn primary full" id="generate">Generate cards</button>
+      </div>
+      <div id="dock-export" hidden>
+        <button type="button" class="btn primary full" id="send-both">Send to Anki</button>
+        <div class="dock-files">
+          <button type="button" class="btn small" id="send-mcq">Questions file</button>
+          <button type="button" class="btn small" id="send-cloze">Route cards file</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <dialog class="sheet" id="settings" aria-labelledby="settings-h">
+    <form method="dialog" class="sheet-body" id="settings-form">
+      <div class="sheet-head">
+        <h2 id="settings-h">Settings</h2>
+        <button class="btn small" value="close" id="settings-done">Done</button>
+      </div>
+      <p class="banner warn" id="settings-msg" hidden></p>
+      <fieldset id="access-fields">
+        <legend>Access</legend>
+        <label class="field" id="passcode-field"><span>Passcode</span>
+          <input type="password" id="s-passcode" autocomplete="current-password">
+        </label>
+        <label class="field"><span>Your own OpenAI key (optional)</span>
+          <input type="password" id="s-key" autocomplete="off" placeholder="sk-...">
+        </label>
+        <p class="hint" id="key-hint">Both are kept on this device only.</p>
+      </fieldset>
+      <fieldset>
+        <legend>Reading plan</legend>
+        <div class="two">
+          <label class="field"><span>Pages per day</span><input type="number" id="s-ppd" inputmode="numeric" min="1" max="60"></label>
+          <label class="field"><span>Days in plan</span><input type="number" id="s-days" inputmode="numeric" min="1" max="999"></label>
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>Anki</legend>
+        <label class="field"><span>Questions deck</span><input type="text" id="s-mcq-deck"></label>
+        <label class="field"><span>Route cards deck</span><input type="text" id="s-cloze-deck"></label>
+        <label class="field"><span>Model</span><input type="text" id="s-model" autocomplete="off" spellcheck="false"></label>
+      </fieldset>
+      <fieldset>
+        <legend>This device</legend>
+        <button type="button" class="btn small" id="forget-book">Forget the saved book</button>
+      </fieldset>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+</body>
+</html>
