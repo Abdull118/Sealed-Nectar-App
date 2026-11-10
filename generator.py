@@ -37,10 +37,9 @@ from prompts import (
     CLOZE_TASK_TEMPLATE,
     DIFFICULTIES,
     FOCI,
-    MCQ_RETRY_TEMPLATE,
     MCQ_SCHEMA,
     MCQ_TASK_TEMPLATE,
-    SCOPE_RULES,
+    PLACES,
     SYSTEM_PROMPT,
 )
 
@@ -56,11 +55,11 @@ DEFAULT_CLOZE_DECK = "Sealed Nectar::Hijrah Cloze"
 MAX_SOURCE_WORDS = 40_000                     # ~ a very long chapter
 
 MCQ_REVIEW_COLUMNS = [
-    "Keep", "Difficulty", "Focus", "Question", "A", "B", "C", "D",
+    "Keep", "Place", "Difficulty", "Focus", "Question", "A", "B", "C", "D",
     "Answer", "Context", "Source excerpt", "Verified", "Check notes",
 ]
 CLOZE_REVIEW_COLUMNS = [
-    "Keep", "Category", "Text", "Extra", "Source excerpt", "Verified", "Check notes",
+    "Keep", "Place", "Category", "Text", "Extra", "Source excerpt", "Verified", "Check notes",
 ]
 
 
@@ -121,14 +120,15 @@ def word_count(text: str) -> int:
 # 2. Counts and difficulty mix
 # ---------------------------------------------------------------------------
 
+SUGGEST_THRESHOLDS = [(2500, 5), (4500, 10), (7000, 15), (None, 20)]
+
+
 def suggest_mcq_count(words: int) -> int:
-    """Pick an increment of 5 from the length of the extract (7 pages ~ 2,500-3,500 words)."""
-    if words <= 1200:
-        return 5
-    if words <= 2500:
-        return 10
-    if words <= 4000:
-        return 15
+    """Pick a maximum (an increment of 5) from the extract's length. Cards stay
+    few and high-yield: 7 pages (~3,000 words) suggests at most 10."""
+    for limit, n in SUGGEST_THRESHOLDS:
+        if limit is None or words <= limit:
+            return n
     return 20
 
 
@@ -344,6 +344,10 @@ def _request_json(client, model: str, messages: list[dict], schema_name: str,
 # 5. MCQs
 # ---------------------------------------------------------------------------
 
+def _place(value) -> str:
+    return value if value in PLACES else "Other"
+
+
 def _validate_mcqs(raw_items: list[dict]) -> tuple[list[dict], list[str]]:
     valid, dropped, seen = [], [], set()
     for i, it in enumerate(raw_items or [], 1):
@@ -368,6 +372,7 @@ def _validate_mcqs(raw_items: list[dict]) -> tuple[list[dict], list[str]]:
             continue
         seen.add(_norm(q))
         valid.append({
+            "place": _place(it.get("place")),
             "difficulty": it["difficulty"],
             "focus": it["focus"],
             "question": q,
@@ -379,38 +384,20 @@ def _validate_mcqs(raw_items: list[dict]) -> tuple[list[dict], list[str]]:
     return valid, dropped
 
 
-def _mix_shortfalls(items: list[dict], targets: dict[str, int]) -> list[str]:
-    counts = Counter(it["difficulty"] for it in items)
-    return [f"- {d}: got {counts.get(d, 0)}, need {targets[d]}"
-            for d in DIFFICULTIES if counts.get(d, 0) < targets[d]]
-
-
-def _satisfied(items: list[dict], targets: dict[str, int]) -> int:
-    counts = Counter(it["difficulty"] for it in items)
-    return sum(min(counts.get(d, 0), t) for d, t in targets.items())
-
-
-def _reconcile(items: list[dict], targets: dict[str, int]) -> tuple[list[dict], list[str]]:
-    """Take exactly the target count per difficulty; fill any gap from the surplus."""
-    by = {d: [it for it in items if it["difficulty"] == d] for d in DIFFICULTIES}
-    chosen = [it for d in DIFFICULTIES for it in by[d][:targets[d]]]
-    total = sum(targets.values())
-    warnings = []
-    if len(chosen) < total:
-        spare = [it for d in DIFFICULTIES for it in by[d][targets[d]:]]
-        fill = spare[: total - len(chosen)]
-        if fill:
-            warnings.append(
-                f"Difficulty mix is off by {len(fill)}: the model could not supply the exact "
-                "mix even after a retry, so the gap was filled from other levels "
-                "(each card's real difficulty is still in its tag)."
-            )
-        chosen += fill
-    if len(chosen) < total:
-        warnings.append(f"Only {len(chosen)} of {total} MCQs survived validation.")
+def _trim_to_max(items: list[dict], max_n: int) -> list[dict]:
+    """Keep at most max_n, preserving the requested difficulty proportions when trimming."""
+    if len(items) <= max_n:
+        chosen = items
+    else:
+        targets = difficulty_split(max_n) if max_n in ALLOWED_MCQ_COUNTS else None
+        chosen = []
+        if targets:
+            by = {d: [it for it in items if it["difficulty"] == d] for d in DIFFICULTIES}
+            chosen = [it for d in DIFFICULTIES for it in by[d][:targets[d]]]
+        spare = [it for it in items if it not in chosen]
+        chosen = chosen + spare[: max_n - len(chosen)]
     order = {d: i for i, d in enumerate(DIFFICULTIES)}
-    chosen.sort(key=lambda it: order[it["difficulty"]])        # Easy -> Medium -> Hard
-    return chosen, warnings
+    return sorted(chosen, key=lambda it: order[it["difficulty"]])       # Easy -> Medium -> Hard
 
 
 def _assign_positions(items: list[dict], seed: str) -> None:
@@ -426,44 +413,31 @@ def _assign_positions(items: list[dict], seed: str) -> None:
         it["answer_letter"] = "ABCD"[pos]
 
 
-def generate_mcqs(client, model: str, source: str, chapter: str, n: int,
+def generate_mcqs(client, model: str, source: str, chapter: str, max_n: int,
                   index: SourceIndex | None = None) -> tuple[list[dict], list[str], list[str]]:
-    targets = difficulty_split(n)
+    """Up to max_n questions on the most important facts. Fewer is fine: the
+    prompt tells the model not to pad when a passage has little that matters."""
+    targets = difficulty_split(max_n)
     index = index or SourceIndex(source)
     task = MCQ_TASK_TEMPLATE.substitute(
-        n_total=n, n_easy=targets["Easy"], n_medium=targets["Medium"], n_hard=targets["Hard"],
-        min_focus=min_per_focus(n), chapter=chapter, source_text=source,
+        max_total=max_n, n_easy=targets["Easy"], n_medium=targets["Medium"],
+        n_hard=targets["Hard"], chapter=chapter, source_text=source,
     )
-    messages: list[dict] = [{"role": "user", "content": task}]
-    data, raw = _request_json(client, model, messages, "mcq_set", MCQ_SCHEMA)
-    raws = [raw]
+    data, raw = _request_json(client, model, [{"role": "user", "content": task}], "mcq_set", MCQ_SCHEMA)
     items, dropped = _validate_mcqs(data.get("questions", []))
+    chosen = _trim_to_max(items, max_n)
 
-    shortfalls = _mix_shortfalls(items, targets)
-    if shortfalls:                                  # one corrective retry
-        problems = shortfalls + ([f"- removed as invalid: {', '.join(dropped)}"] if dropped else [])
-        messages += [
-            {"role": "assistant", "content": raw},
-            {"role": "user", "content": MCQ_RETRY_TEMPLATE.substitute(
-                problems="\n".join(problems), n_total=n, n_easy=targets["Easy"],
-                n_medium=targets["Medium"], n_hard=targets["Hard"])},
-        ]
-        data2, raw2 = _request_json(client, model, messages, "mcq_set", MCQ_SCHEMA)
-        raws.append(raw2)
-        items2, dropped2 = _validate_mcqs(data2.get("questions", []))
-        if _satisfied(items2, targets) >= _satisfied(items, targets):
-            items, dropped = items2, dropped2
-
-    chosen, warnings = _reconcile(items, targets)
+    warnings = []
     if dropped:
-        warnings.append(f"MCQ items removed as invalid: {', '.join(dropped)}.")
-    focus_counts = Counter(it["focus"] for it in chosen)
-    thin = [f for f in FOCI if focus_counts.get(f, 0) < min_per_focus(n)]
-    if thin:
-        warnings.append(
-            "Light coverage of " + ", ".join(thin) +
-            " (the text may simply contain few of these; nothing was invented to fill the gap)."
-        )
+        warnings.append(f"Questions removed as invalid: {', '.join(dropped)}.")
+    if not chosen:
+        warnings.append("No questions: these pages have little about Makkah, Madinah or the "
+                        "core Seerah, so nothing was padded in.")
+    elif len(chosen) >= 5:
+        counts = Counter(it["difficulty"] for it in chosen)
+        missing = [d for d in DIFFICULTIES if not counts.get(d)]
+        if missing:
+            warnings.append("No " + " or ".join(missing).lower() + " questions in this set.")
 
     seed = chapter + hashlib.sha256(source.encode()).hexdigest()
     _assign_positions(chosen, seed)
@@ -471,7 +445,7 @@ def generate_mcqs(client, model: str, source: str, chapter: str, n: int,
         notes = verify_mcq(it, index)
         it["verified"] = not notes
         it["check_notes"] = "; ".join(notes)
-    return chosen, warnings, raws
+    return chosen, warnings, [raw]
 
 
 # ---------------------------------------------------------------------------
@@ -518,14 +492,9 @@ def cloze_plain(text: str) -> str:
 
 
 def generate_cloze(client, model: str, source: str, chapter: str, max_cards: int,
-                   scope: str = "strict", index: SourceIndex | None = None
-                   ) -> tuple[list[dict], list[str], list[str]]:
-    if scope not in SCOPE_RULES:
-        raise ValueError(f"scope must be one of {list(SCOPE_RULES)}")
+                   index: SourceIndex | None = None) -> tuple[list[dict], list[str], list[str]]:
     index = index or SourceIndex(source)
-    task = CLOZE_TASK_TEMPLATE.substitute(
-        chapter=chapter, max_cards=max_cards, scope_rule=SCOPE_RULES[scope], source_text=source,
-    )
+    task = CLOZE_TASK_TEMPLATE.substitute(chapter=chapter, max_cards=max_cards, source_text=source)
     data, raw = _request_json(client, model, [{"role": "user", "content": task}],
                               "cloze_set", CLOZE_SCHEMA)
     cards, dropped, seen = [], [], set()
@@ -543,6 +512,7 @@ def generate_cloze(client, model: str, source: str, chapter: str, max_cards: int
         notes = list(issues) + verify_cloze(answers, excerpt, index)
         category = c.get("category") if c.get("category") in CLOZE_CATEGORIES else "Event"
         cards.append({
+            "place": _place(c.get("place")),
             "category": category,
             "text": fixed,
             "extra": _clean_str(c.get("extra")),
@@ -554,13 +524,10 @@ def generate_cloze(client, model: str, source: str, chapter: str, max_cards: int
     if len(cards) > max_cards:
         cards = cards[:max_cards]
     if dropped:
-        warnings.append(f"Cloze cards removed as invalid: {', '.join(dropped)}.")
+        warnings.append(f"Fill-in cards removed as invalid: {', '.join(dropped)}.")
     if not cards:
-        warnings.append(
-            "No Hijrah-route facts found in this extract, so no cloze cards were made. "
-            "That is expected for chapters before or after the migration; try the "
-            "'Broad' scope if you want Makkah/Madinah geography and key figures."
-        )
+        warnings.append("No fill-in cards: these pages have no concrete facts about Makkah, "
+                        "Madinah or the Hijrah route.")
     return cards, warnings, [raw]
 
 
@@ -593,6 +560,7 @@ class GenerationResult:
 def mcq_review_df(items: list[dict]) -> pd.DataFrame:
     rows = [{
         "Keep": True,
+        "Place": it.get("place", "Other"),
         "Difficulty": it["difficulty"],
         "Focus": it["focus"],
         "Question": it["question"],
@@ -610,6 +578,7 @@ def mcq_review_df(items: list[dict]) -> pd.DataFrame:
 def cloze_review_df(cards: list[dict]) -> pd.DataFrame:
     rows = [{
         "Keep": True,
+        "Place": c.get("place", "Other"),
         "Category": c["category"],
         "Text": c["text"],
         "Extra": c["extra"],
@@ -621,7 +590,7 @@ def cloze_review_df(cards: list[dict]) -> pd.DataFrame:
 
 
 def run_generation(client, model: str, source: str, chapter: str, n_mcq: int,
-                   max_cloze: int, scope: str = "strict") -> GenerationResult:
+                   max_cloze: int) -> GenerationResult:
     """Run the MCQ and cloze requests in parallel and return review tables."""
     source, chapter = prepare_source(source, chapter)
 
@@ -629,7 +598,7 @@ def run_generation(client, model: str, source: str, chapter: str, n_mcq: int,
     result = GenerationResult(mcq_review_df([]), cloze_review_df([]))
     with ThreadPoolExecutor(max_workers=2) as pool:
         f_mcq = pool.submit(generate_mcqs, client, model, source, chapter, n_mcq, index)
-        f_cloze = pool.submit(generate_cloze, client, model, source, chapter, max_cloze, scope, index)
+        f_cloze = pool.submit(generate_cloze, client, model, source, chapter, max_cloze, index)
         try:
             items, warns, raws = f_mcq.result()
             result.mcq_review = mcq_review_df(items)
@@ -645,7 +614,7 @@ def run_generation(client, model: str, source: str, chapter: str, n_mcq: int,
         except GenerationError as e:
             result.errors.append(f"Cloze: {e}")
     result.raw.update({"model": model, "chapter": chapter, "n_mcq": n_mcq,
-                       "max_cloze": max_cloze, "scope": scope})
+                       "max_cloze": max_cloze})
     return result
 
 
@@ -691,7 +660,8 @@ def build_mcq_notes(review: pd.DataFrame, chapter: str, day: int | None = None,
         if _clean_str(r.get("Source excerpt")):
             back += f"<br><br><i>Source: “{_h(r['Source excerpt'])}”</i>"
         back += f"<br><br><small>{_h(chapter)} · {_h(r['Difficulty'])} · {_h(r['Focus'])}</small>"
-        tags = _base_tags(chapter, day) + [f"Difficulty::{tag_slug(r['Difficulty'])}",
+        tags = _base_tags(chapter, day) + [f"Place::{tag_slug(r.get('Place') or 'Other')}",
+                                           f"Difficulty::{tag_slug(r['Difficulty'])}",
                                            f"Focus::{tag_slug(r['Focus'])}"]
         if not r.get("Verified"):
             tags.append("Needs_Review")
@@ -713,7 +683,10 @@ def build_cloze_notes(review: pd.DataFrame, chapter: str, day: int | None = None
         if _clean_str(r.get("Source excerpt")):
             extra += f"<br><br><i>Source: “{_h(r['Source excerpt'])}”</i>"
         extra += f"<br><br><small>{_h(chapter)} · {_h(r['Category'])}</small>"
-        tags = _base_tags(chapter, day) + ["Hijrah_Trek", f"Hijrah::{tag_slug(r['Category'])}"]
+        tags = _base_tags(chapter, day) + [f"Place::{tag_slug(r.get('Place') or 'Other')}",
+                                           f"Category::{tag_slug(r['Category'])}"]
+        if r.get("Place") == "Hijrah route":
+            tags.append("Hijrah_Trek")
         if not r.get("Verified"):
             tags.append("Needs_Review")
         rows.append({"Text": _h(fixed), "Back Extra": extra, "Tags": " ".join(tags), "Deck": deck})
@@ -792,9 +765,8 @@ def _cli(argv: list[str] | None = None) -> int:
     p.add_argument("--pages", help="PDF page range, e.g. 92-98 (default: all pages)")
     p.add_argument("--day", type=int, default=None, help="Reading day 1-85 (optional Day:: tag)")
     p.add_argument("--mcq", type=int, default=0, choices=(0,) + ALLOWED_MCQ_COUNTS,
-                   help="MCQ count; 0 = suggest from length (default)")
+                   help="Maximum MCQs; 0 = suggest from length (default)")
     p.add_argument("--cloze-max", type=int, default=15, choices=ALLOWED_CLOZE_MAX)
-    p.add_argument("--scope", default="strict", choices=list(SCOPE_RULES))
     p.add_argument("--model", default=DEFAULT_MODEL)
     p.add_argument("--mcq-deck", default=DEFAULT_MCQ_DECK)
     p.add_argument("--cloze-deck", default=DEFAULT_CLOZE_DECK)
@@ -813,7 +785,7 @@ def _cli(argv: list[str] | None = None) -> int:
     n = a.mcq or suggest_mcq_count(word_count(source))
     print(f"{word_count(source):,} words -> {n} MCQs (mix {difficulty_split(n)}), up to {a.cloze_max} cloze")
 
-    res = run_generation(make_client(), a.model, source, a.chapter, n, a.cloze_max, a.scope)
+    res = run_generation(make_client(), a.model, source, a.chapter, n, a.cloze_max)
     for w in res.warnings:
         print("WARNING:", w)
     for e in res.errors:

@@ -4,7 +4,7 @@
   "functions": {
     "app.py": {
       "maxDuration": 300,
-      "excludeFiles": "{public,tests,output}/**"
+      "excludeFiles": "{public,tests,output,.data}/**"
     }
   }
 }

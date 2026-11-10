@@ -1,5 +1,7 @@
 tests/
 output/
+.data/
 .venv/
 __pycache__/
 .pytest_cache/
+*.pdf

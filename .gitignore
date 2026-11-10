@@ -2,5 +2,9 @@
 __pycache__/
 .pytest_cache/
 output/
+.data/
 .vercel/
 .env
+.env.local
+# Never commit the book: this repository is public.
+*.pdf

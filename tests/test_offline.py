@@ -49,9 +49,10 @@ They reached Quba on Monday, the eighth of Rabi' Al-Awwal, and stayed there four
 """
 
 
-def q(diff, focus, question, answer, distractors, excerpt, context="Context sentence."):
-    return {"source_excerpt": excerpt, "difficulty": diff, "focus": focus, "question": question,
-            "correct_answer": answer, "distractors": distractors, "context": context}
+def q(diff, focus, question, answer, distractors, excerpt, context="Context sentence.", place="Hijrah route"):
+    return {"source_excerpt": excerpt, "place": place, "difficulty": diff, "focus": focus,
+            "question": question, "correct_answer": answer, "distractors": distractors,
+            "context": context}
 
 
 E1 = q("Easy", "Historical Date", "For how many nights did they hide in the Cave of Thawr?",
@@ -79,20 +80,20 @@ BAD = q("Easy", "Key Event", "Broken item?", "X", ["Y", "Y"], "nothing")   # 1 u
 
 CLOZE = {"cards": [
     {"source_excerpt": "They stayed in the cave for three nights: Friday, Saturday and Sunday.",
-     "category": "Rest Stop",
+     "category": "Rest Stop", "place": "Hijrah route",
      "text": "The Prophet (PBUH) and Abu Bakr hid in the {{c2::Cave of Thawr}} for {{c3::three}} nights.",
      "extra": "Food and news reached them each night."},
     {"source_excerpt": "After travelling about five miles they reached the mountain of Thawr, a rugged and high mountain",
-     "category": "Terrain",
+     "category": "Terrain", "place": "Hijrah route",
      "text": "Thawr is a {{c1::rugged and high}} mountain reached after about {{c2::five}} miles.",
      "extra": "They went south first."},
     {"source_excerpt": "They hired Abdullah bin Uraiqit, a skilled guide who knew the desert roads",
-     "category": "Figure",
+     "category": "Figure", "place": "Hijrah route",
      "text": "Their guide was {{c1::Abdullah bin Uraiqit}}.",
      "extra": "He was not yet Muslim."},
     # Hallucinated term: Quba stay changed to fourteen days.
     {"source_excerpt": "They reached Quba on Monday, the eighth of Rabi' Al-Awwal, and stayed there four days.",
-     "category": "Rest Stop",
+     "category": "Rest Stop", "place": "Madinah",
      "text": "At {{c1::Quba}} they stayed for {{c2::fourteen}} days.",
      "extra": "First stop near Yathrib."},
     {"source_excerpt": "x", "category": "Location", "text": "Broken {{c1::cloze card.", "extra": ""},
@@ -117,15 +118,15 @@ class FakeClient:
 
 
 def make_client():
-    first = {"questions": [E1, H2 | {"difficulty": "Easy"}, M1, M2, BAD]}     # no Hard -> retry
-    second = {"questions": [E1, M1, M2, M3, H1, H2]}                            # one extra Hard
-    return FakeClient({"mcq_set": [first, second], "cloze_set": [CLOZE]})
+    # 7 questions for a maximum of 5: one invalid, one Hard too many
+    reply = {"questions": [E1, M1, BAD, M2, M3, H1, H2]}
+    return FakeClient({"mcq_set": [reply], "cloze_set": [CLOZE]})
 
 
 @pytest.fixture(scope="module")
 def result():
     client = make_client()
-    res = g.run_generation(client, "test-model", g.clean_text(SAMPLE), "The Hijrah", 5, 15, "strict")
+    res = g.run_generation(client, "test-model", g.clean_text(SAMPLE), "The Hijrah", 5, 15)
     res.client = client
     return res
 
@@ -140,7 +141,7 @@ def test_difficulty_split():
 
 
 def test_suggested_count_is_increment_of_5():
-    assert [g.suggest_mcq_count(w) for w in (800, 2000, 3200, 6000)] == [5, 10, 15, 20]
+    assert [g.suggest_mcq_count(w) for w in (2000, 3200, 6000, 9000)] == [5, 10, 15, 20]
 
 
 # ---- MCQ pipeline ---------------------------------------------------------
@@ -150,13 +151,13 @@ def test_prompt_contents(result):
         else result.client.calls[1]
     assert first["instructions"] == g.SYSTEM_PROMPT
     msg = first["input"][0]["content"]
-    assert "exactly 5 multiple-choice" in msg and "- Hard: 1" in msg and "<source_text>" in msg
+    assert "up to 5 multiple-choice" in msg and "1 Hard" in msg and "<source_text>" in msg
     assert first["text"]["format"]["strict"] is True
 
 
-def test_retry_then_exact_mix(result):
+def test_one_request_trimmed_to_max(result):
     names = [c["text"]["format"]["name"] for c in result.client.calls]
-    assert names.count("mcq_set") == 2                # one corrective retry
+    assert names.count("mcq_set") == 1                # no retries: counts are maximums
     df = result.mcq_review
     assert len(df) == 5
     assert Counter(df["Difficulty"]) == {"Easy": 1, "Medium": 3, "Hard": 1}
@@ -229,7 +230,11 @@ def test_cloze_csv(result):
     notes = g.build_cloze_notes(result.cloze_review, "The Hijrah")
     header, rows = _parse(g.anki_csv(notes, "Cloze"))
     assert "#notetype:Cloze" in header and "#columns:Text,Back Extra,Tags,Deck" in header
-    assert all("Hijrah_Trek" in r[2].split() and "Chapter::The_Hijrah" in r[2].split() for r in rows)
+    assert all("Chapter::The_Hijrah" in r[2].split() for r in rows)
+    route = [r for r in rows if "Place::Hijrah_route" in r[2].split()]
+    assert len(route) == 3 and all("Hijrah_Trek" in r[2].split() for r in route)
+    quba = [r for r in rows if "Quba" in r[0]][0]
+    assert "Place::Madinah" in quba[2].split() and "Hijrah_Trek" not in quba[2].split()
     assert all("{{c1::" in r[0] for r in rows)
 
 
@@ -261,7 +266,7 @@ def test_real_anki_import(result, tmp_path):
         assert "Difficulty::Easy" in n.tags or any(t.startswith("Difficulty::") for t in n.tags)
         c = col.get_note(cloze_ids[0])
         assert c.note_type()["name"] == "Cloze" and "{{c1::" in c["Text"] and "Source:" in c["Back Extra"]
-        assert "Hijrah_Trek" in c.tags
+        assert any("Hijrah_Trek" in col.get_note(i).tags for i in cloze_ids)
         # 2 deletions -> 2 cards, so the cloze deck has more cards than notes
         assert len(col.find_cards('"deck:Sealed Nectar::Hijrah Cloze"')) > len(cloze_ids)
         assert len(col.find_notes("tag:Needs_Review")) == 2
